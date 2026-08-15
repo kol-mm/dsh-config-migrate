@@ -1,0 +1,26 @@
+{
+  "name": "dsh-config-migrate",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness 配置迁移插件：一键导出/导入 DSH_HOME 配置，跨平台（Windows/macOS/Linux），支持外部插件与二进制资源迁移。",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "migration",
+    "config",
+    "cordis"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "host.js",
+    "client.js",
+    "README.md"
+  ],
+  "main": "host.js",
+  "dsh": {
+    "plugin": {
+      "host": "./host.js",
+      "client": "./client.js"
+    }
+  }
+}
