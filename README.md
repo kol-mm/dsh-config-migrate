@@ -3,6 +3,8 @@
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Syntax](https://github.com/kol-mm/dsh-config-migrate/actions/workflows/syntax-check.yml/badge.svg)
 
+**English:** [README.en.md](README.en.md)
+
 DeepSeek Harness 配置迁移插件 —— 一键导出/导入 `${DSH_HOME}` 配置（settings、凭据、profiles、external-plugins、agent presets），跨平台支持 **Windows / macOS / Linux**，专为「换新设备零折腾」设计。
 
 ## 功能
