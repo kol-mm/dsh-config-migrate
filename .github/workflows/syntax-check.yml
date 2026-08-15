@@ -1,0 +1,23 @@
+name: syntax-check
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # host.js / client.js 是 Cordis 插件函数体（以 return { 开头），
+      # 用 new Function() 包裹后做语法校验。
+      - name: Validate plugin function bodies
+        run: |
+          node -e "new Function(require('fs').readFileSync('host.js','utf8')); console.log('host.js OK')"
+          node -e "new Function(require('fs').readFileSync('client.js','utf8')); console.log('client.js OK')"
+      - name: Validate package.json
+        run: node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('package.json OK')"

@@ -1,5 +1,8 @@
 # dsh-config-migrate
 
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Syntax](https://github.com/kol-mm/dsh-config-migrate/actions/workflows/syntax-check.yml/badge.svg)
+
 DeepSeek Harness 配置迁移插件 —— 一键导出/导入 `${DSH_HOME}` 配置（settings、凭据、profiles、external-plugins、agent presets），跨平台支持 **Windows / macOS / Linux**，专为「换新设备零折腾」设计。
 
 ## 功能
@@ -24,10 +27,28 @@ DeepSeek Harness 配置迁移插件 —— 一键导出/导入 `${DSH_HOME}` 配
   - 链接失败进 `linkErrors` 并提示（可能需要在新设备 `pnpm install`）
 - 可选：仅恢复缺失文件（`onlyMissing`）、排除凭据、`dryRun` 预览
 
+## 导出包结构示例
+
+```json
+{
+  "format": "dsh-config-migration",
+  "version": 2,
+  "exportedAt": "2026-08-14T08:00:00.000Z",
+  "sourceHome": "C:\\Users\\xxx\\.dsh",
+  "platform": "Windows",
+  "files": {
+    "settings.yaml":                       { "encoding": "utf8",   "content": "ui-onboarding: ..." },
+    ".credentials.yaml":                   { "encoding": "utf8",   "content": "DEEPSEEK_API_KEY: ..." },
+    "profiles/web/package.json":           { "encoding": "utf8",   "content": "{ ... \"link:../../external-plugins/...\" ... }" },
+    "external-plugins/.../assets/x.webp":  { "encoding": "base64", "content": "UklGRi4B..." }
+  }
+}
+```
+
 ## 使用方式
 
 ### 方式一：动态插件（推荐快速体验）
-在 DeepSeek Harness 会话中通过 Cordis 动态插件机制加载 `host.js` / `client.js`（见下文「代码结构」），运行后：
+在 DeepSeek Harness 会话中通过 Cordis 动态插件机制加载 `host.js` / `client.js`（见「代码结构」），运行后：
 - **设置面板**：设置 → 「配置迁移」页面，含导出/导入/预览、DSH_HOME 覆盖、凭据与仅缺失选项
 - **模型工具**：`dsh_config_migrate`（action: status/export/import/importLast）
 
@@ -40,8 +61,9 @@ DeepSeek Harness 配置迁移插件 —— 一键导出/导入 `${DSH_HOME}` 配
 | --- | --- |
 | `host.js` | Host half：RPC handlers（config/status、config/export、config/import、config/importLast）+ 动态工具 `dsh_config_migrate` |
 | `client.js` | Client half：设置页「配置迁移」UI（`settings.section` 槽位） |
+| `.github/workflows/syntax-check.yml` | CI：`new Function()` 包裹校验两个函数体的语法 + package.json 合法性 |
 
-两个文件均为 Cordis 插件函数体（`return { apply(ctx) { ... } }`），可直接作为动态 Package 的 `code.host` / `code.client` 加载。
+两个 JS 文件均为 Cordis 插件函数体（`return { apply(ctx) { ... } }`），可直接作为动态 Package 的 `code.host` / `code.client` 加载。
 
 ## 跨平台实现要点
 
@@ -59,4 +81,4 @@ DeepSeek Harness 配置迁移插件 —— 一键导出/导入 `${DSH_HOME}` 配
 
 ## License
 
-MIT
+[MIT](LICENSE)
