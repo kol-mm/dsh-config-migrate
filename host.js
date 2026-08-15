@@ -1,6 +1,8 @@
-// dsh-config-migrate — Host half
+// dsh-config-migrate — Host half (v3)
 // Cordis 动态插件函数体：直接作为动态 Package 的 code.host 使用（return { apply(ctx) {...} }）
 // 功能：config/status、config/export、config/import、config/importLast RPC + 动态工具 dsh_config_migrate
+// v3 变更：凭据 AES-256-GCM 加密（node）、外部插件依赖检测、v1/v2 兼容（导入时相对化 link）、
+//          二进制/链接操作统一走 node（harness 子进程中 powershell/openssl 不可用）
 return {
   apply(ctx) {
     const fs = ctx.get('fs')
@@ -56,7 +58,6 @@ return {
         return null
       }
     }
-    // Rewrite absolute link: paths to portable relative ones (profiles/<p> -> ../../external-plugins/<name>)
     function relativizeLinks(text) {
       return String(text).replace(/"link:[^"]*external-plugins[\\/]+([^"\\/]+)"/g, '"link:../../external-plugins/$1"')
     }
@@ -77,52 +78,93 @@ return {
       return parts.join('/')
     }
 
-    async function runCmd(argv, cwd) {
+    async function runNode(script, args, input, cwd) {
       if (subprocess === undefined) return { ok: false, error: 'subprocess 服务不可用' }
       try {
+        const argv = ['node', '-e', script].concat(args || [])
         const handle = subprocess.spawn({
           argv,
-          cwd,
-          stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 65536 } },
+          cwd: cwd || wsRoot || '.',
+          stdio: {
+            stdin: input !== undefined ? { data: input } : 'ignore',
+            stdout: { maxBytes: 262144 },
+            stderr: { maxBytes: 262144 },
+          },
           graceMs: 120000,
         })
         const outcome = await handle.done
-        return { ok: outcome.exitCode === 0, exitCode: outcome.exitCode }
+        const out = handle.collected.stdout ? handle.collected.stdout.readFrom(0).text : ''
+        const err = handle.collected.stderr ? handle.collected.stderr.readFrom(0).text : ''
+        return { ok: outcome.exitCode === 0, exitCode: outcome.exitCode, out, err }
       } catch (e) {
         return { ok: false, error: String(e && e.message ? e.message : e) }
       }
     }
 
-    // Decode a base64 text file into a binary target, platform-aware.
-    async function decodeBase64File(home, tmpPath, abs) {
-      if (isWindowsPath(home)) {
-        const ps = "$b=[IO.File]::ReadAllText('" + tmpPath.replace(/'/g, "''") + "');[IO.File]::WriteAllBytes('" + abs.replace(/'/g, "''") + "',[Convert]::FromBase64String(($b -replace '\\s','')));Remove-Item -LiteralPath '" + tmpPath.replace(/'/g, "''") + "' -Force"
-        return runCmd(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', ps], home)
+    const CRED_SCRIPT = [
+      'const crypto=require("crypto");',
+      'const mode=process.argv[1];',
+      'const pass=process.argv[2];',
+      'let chunks=[];',
+      'process.stdin.on("data",c=>chunks.push(c));',
+      'process.stdin.on("end",()=>{',
+      '  const buf=Buffer.concat(chunks);',
+      '  if(mode==="enc"){',
+      '    const salt=crypto.randomBytes(16);',
+      '    const key=crypto.scryptSync(pass,salt,32);',
+      '    const iv=crypto.randomBytes(12);',
+      '    const c=crypto.createCipheriv("aes-256-gcm",key,iv);',
+      '    const enc=Buffer.concat([c.update(buf),c.final()]);',
+      '    process.stdout.write(JSON.stringify({salt:salt.toString("base64"),iv:iv.toString("base64"),tag:c.getAuthTag().toString("base64"),data:enc.toString("base64")}));',
+      '  } else if(mode==="dec"){',
+      '    const j=JSON.parse(buf.toString("utf8"));',
+      '    const key=crypto.scryptSync(pass,Buffer.from(j.salt,"base64"),32);',
+      '    const d=crypto.createDecipheriv("aes-256-gcm",key,Buffer.from(j.iv,"base64"));',
+      '    d.setAuthTag(Buffer.from(j.tag,"base64"));',
+      '    try{const plain=Buffer.concat([d.update(Buffer.from(j.data,"base64")),d.final()]);process.stdout.write(plain.toString("utf8"));}',
+      '    catch(e){process.exit(3);}',
+      '  } else { process.exit(2); }',
+      '});',
+    ].join('\n')
+
+    async function encryptCredential(text, password) {
+      const r = await runNode(CRED_SCRIPT, ['enc', password], text)
+      if (!r.ok) throw new Error('凭据加密失败: ' + (r.error || r.err || r.exitCode))
+      return JSON.parse(r.out)
+    }
+    async function decryptCredential(payload, password) {
+      const r = await runNode(CRED_SCRIPT, ['dec', password], JSON.stringify(payload))
+      if (!r.ok) {
+        if (r.exitCode === 3) throw new Error('口令错误或数据损坏')
+        throw new Error('凭据解密失败: ' + (r.error || r.err || r.exitCode))
       }
-      // Unix: try openssl, then BSD base64 -D, then GNU base64 -d
-      const r1 = await runCmd(['openssl', 'base64', '-d', '-in', tmpPath, '-out', abs], home)
-      if (r1.ok) {
-        await runCmd(['rm', '-f', tmpPath], home)
-        return r1
-      }
-      const r2 = await runCmd(['base64', '-D', '-i', tmpPath, '-o', abs], home)
-      if (r2.ok) {
-        await runCmd(['rm', '-f', tmpPath], home)
-        return r2
-      }
-      const sh = "base64 -d < '" + tmpPath.replace(/'/g, "'\\''") + "' > '" + abs.replace(/'/g, "'\\''") + "' && rm -f '" + tmpPath.replace(/'/g, "'\\''") + "'"
-      const r3 = await runCmd(['/bin/sh', '-c', sh], home)
-      return r3
+      return r.out
     }
 
-    // Create a plugin link in node_modules, platform-aware (junction on Windows, symlink on Unix).
-    async function linkExternalPlugin(home, linkPath, target) {
-      if (isWindowsPath(home)) {
-        const ps = "$parent=Split-Path -Parent '" + linkPath.replace(/'/g, "''") + "';New-Item -ItemType Directory -Force -Path $parent|Out-Null;if(Test-Path -LiteralPath '" + linkPath.replace(/'/g, "''") + "'){Remove-Item -LiteralPath '" + linkPath.replace(/'/g, "''") + "' -Force};New-Item -ItemType Junction -Path '" + linkPath.replace(/'/g, "''") + "' -Target '" + target.replace(/'/g, "''") + "'|Out-Null"
-        return runCmd(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', ps], home)
-      }
-      const sh = "mkdir -p \"$(dirname '" + linkPath.replace(/'/g, "'\\''") + "')\" && ln -sfn '" + target.replace(/'/g, "'\\''") + "' '" + linkPath.replace(/'/g, "'\\''") + "'"
-      return runCmd(['/bin/sh', '-c', sh], home)
+    const BIN_SCRIPT = [
+      'const fs=require("fs");',
+      'const b64=fs.readFileSync(process.argv[1],"utf8");',
+      'fs.writeFileSync(process.argv[2],Buffer.from(b64.replace(/\\s/g,""),"base64"));',
+      'fs.unlinkSync(process.argv[1]);',
+    ].join('\n')
+    async function decodeBase64File(tmpPath, abs) {
+      const r = await runNode(BIN_SCRIPT, [tmpPath, abs])
+      return r.ok ? r : { ok: false, error: r.error || r.err || ('exit ' + r.exitCode) }
+    }
+
+    const LINK_SCRIPT = [
+      'const fs=require("fs");',
+      'const path=require("path");',
+      'const link=process.argv[1];',
+      'const target=process.argv[2];',
+      'const win=/^[A-Za-z]:|\\\\/.test(target);',
+      'fs.mkdirSync(path.dirname(link),{recursive:true});',
+      'try{fs.rmSync(link,{recursive:true,force:true});}catch(e){}',
+      'fs.symlinkSync(target,link,win?"junction":"dir");',
+    ].join('\n')
+    async function linkExternalPlugin(linkPath, target) {
+      const r = await runNode(LINK_SCRIPT, [linkPath, target])
+      return r.ok ? r : { ok: false, error: r.error || r.err || ('exit ' + r.exitCode) }
     }
 
     async function resolveHome(args) {
@@ -248,6 +290,27 @@ return {
       }
     }
 
+    async function collectPluginDeps(home) {
+      const pluginRoot = joinBase(home, 'external-plugins')
+      let entries
+      try { entries = await fs.listDir(await fs.resolve(pluginRoot)) } catch (e) { return [] }
+      const missing = []
+      for (const e of entries) {
+        if (e.type !== 'directory') continue
+        const pkgPath = joinBase(pluginRoot, e.name + '/package.json')
+        let text
+        try { text = await fs.readText(await fs.resolve(pkgPath)) } catch (err) { continue }
+        let pkg
+        try { pkg = JSON.parse(text) } catch (err) { continue }
+        const deps = Object.assign({}, pkg.dependencies || {}, pkg.peerDependencies || {})
+        for (const name of Object.keys(deps)) {
+          if (name.indexOf('@deepseek-ai/') === 0 || name === '@dsh-external') continue
+          missing.push(name)
+        }
+      }
+      return Array.from(new Set(missing))
+    }
+
     async function exportBundle(args) {
       const opts = args || {}
       const home = await resolveHome(args)
@@ -255,7 +318,7 @@ return {
       const maxBytes = (opts.maxFileBytes && typeof opts.maxFileBytes === 'number') ? opts.maxFileBytes : MAX_FILE_BYTES
       const bundle = {
         format: 'dsh-config-migration',
-        version: 2,
+        version: 3,
         exportedAt: new Date().toISOString(),
         sourceHome: home,
         platform: platformName(home),
@@ -264,6 +327,8 @@ return {
       const skipped = []
       let binaryCount = 0
       let total = 0
+      let credentialEncrypted = false
+      const password = typeof opts.password === 'string' && opts.password ? opts.password : null
       for (const f of files) {
         if (f.size > maxBytes) { skipped.push(f.rel + ' (过大)'); continue }
         let bytes
@@ -274,9 +339,21 @@ return {
         }
         const text = tryUtf8(bytes)
         if (text !== null) {
-          const content = (f.rel.indexOf('profiles/') === 0 && basename(f.rel) === 'package.json')
-            ? relativizeLinks(text)
-            : text
+          let content = text
+          if (f.rel === '.credentials.yaml' && password) {
+            try {
+              const enc = await encryptCredential(text, password)
+              bundle.files[f.rel] = { encoding: 'encrypted', payload: enc }
+              credentialEncrypted = true
+              total += JSON.stringify(enc).length
+              continue
+            } catch (e) {
+              skipped.push(f.rel + ' (加密失败: ' + e.message + ')'); continue
+            }
+          }
+          if (f.rel.indexOf('profiles/') === 0 && basename(f.rel) === 'package.json') {
+            content = relativizeLinks(text)
+          }
           bundle.files[f.rel] = { encoding: 'utf8', content }
           total += content.length
         } else {
@@ -285,7 +362,7 @@ return {
           total += bytes.length
         }
       }
-      const bundledFiles = Object.keys(bundle.files).map((rel) => ({ rel, size: bundle.files[rel].content.length }))
+      const bundledFiles = Object.keys(bundle.files).map((rel) => ({ rel, size: JSON.stringify(bundle.files[rel]).length }))
       const dryRun = !!opts.dryRun
       if (dryRun) {
         return {
@@ -293,10 +370,12 @@ return {
           count: files.length,
           fileCount: bundledFiles.length,
           binaryCount,
+          credentialEncrypted,
           skipped,
           bundledFiles,
         }
       }
+      bundle.pluginDeps = await collectPluginDeps(home)
       const outPath = typeof opts.path === 'string' && opts.path
         ? String(opts.path)
         : joinBase(wsRoot || home, 'dsh-config-export.json')
@@ -306,10 +385,12 @@ return {
       await saveState(outPath)
       return {
         bundlePath: outPath,
-        version: 2,
+        version: 3,
         count: files.length,
         fileCount: bundledFiles.length,
         binaryCount,
+        credentialEncrypted,
+        pluginDeps: bundle.pluginDeps,
         skipped,
         bundledFiles,
       }
@@ -328,27 +409,42 @@ return {
       }
       const dryRun = !!opts.dryRun
       const onlyMissing = !!opts.onlyMissing
+      const password = typeof opts.password === 'string' && opts.password ? opts.password : null
       const policy = sandboxPolicy ? { mode: 'danger-full-access', workspaceRoot: sandboxPolicy.workspaceRoot } : undefined
       const restored = []
       const backups = []
       const skipped = []
       const verifyErrors = []
       let binaries = 0
+      let decryptedCred = false
       for (const rel of Object.keys(bundle.files)) {
         const safe = safeRel(rel)
         const entry = bundle.files[rel]
-        if (!safe || !entry || typeof entry.content !== 'string') { skipped.push(rel + ' (非法条目)'); continue }
+        if (!safe || !entry || typeof entry.content !== 'string' && typeof entry.payload !== 'object') { skipped.push(rel + ' (非法条目)'); continue }
         if (shouldSkip(rel, opts)) { skipped.push(rel + ' (已排除)'); continue }
         const abs = joinBase(home, safe)
         const target = await fs.resolve(abs)
         const existing = await fs.stat(target).catch(() => undefined)
-        const encoding = entry.encoding === 'base64' ? 'base64' : 'utf8'
+        const encoding = entry.encoding === 'encrypted' ? 'encrypted' : (entry.encoding === 'base64' ? 'base64' : 'utf8')
+        let content = entry.content
+        if (encoding === 'encrypted') {
+          if (!password) { skipped.push(rel + ' (已加密，需要口令)'); continue }
+          try {
+            content = await decryptCredential(entry.payload, password)
+            decryptedCred = true
+          } catch (e) {
+            skipped.push(rel + ' (' + e.message + ')'); continue
+          }
+        }
+        if (encoding === 'utf8' && rel.indexOf('profiles/') === 0 && basename(rel) === 'package.json') {
+          content = relativizeLinks(content)
+        }
         if (existing && existing.type === 'file') {
           if (onlyMissing) { skipped.push(rel + ' (已存在，仅恢复缺失)'); continue }
           let same = false
           if (encoding === 'utf8') {
-            try { same = (await fs.readText(target)) === entry.content } catch (e) { same = false }
-          } else {
+            try { same = (await fs.readText(target)) === content } catch (e) { same = false }
+          } else if (encoding === 'base64') {
             try {
               const cur = await fs.readBytes(target, undefined, base64Len(entry.content) + 64)
               same = cur.length === base64Len(entry.content)
@@ -371,8 +467,8 @@ return {
           const tmpPath = joinBase(home, '.dshmig-tmp-' + Date.now() + '-' + binaries + '.b64')
           try {
             await fs.writeText(await fs.resolve(tmpPath), entry.content, undefined, undefined, policy)
-            const r = await decodeBase64File(home, tmpPath, abs)
-            if (!r.ok) { skipped.push(rel + ' (二进制写入失败: ' + (r.error || r.exitCode) + ')'); continue }
+            const r = await decodeBase64File(tmpPath, abs)
+            if (!r.ok) { skipped.push(rel + ' (二进制写入失败: ' + r.error + ')'); continue }
           } catch (e) {
             skipped.push(rel + ' (二进制写入异常)'); continue
           }
@@ -384,11 +480,13 @@ return {
         } else if (encoding === 'base64') {
           binaries += 1
         } else if (!dryRun) {
-          await fs.writeText(target, entry.content, undefined, undefined, policy)
-          try {
-            const back = await fs.readText(target)
-            if (back !== entry.content) verifyErrors.push(rel + ' (内容不一致)')
-          } catch (e) { verifyErrors.push(rel + ' (回读失败)') }
+          await fs.writeText(target, content, undefined, undefined, policy)
+          if (encoding === 'utf8') {
+            try {
+              const back = await fs.readText(target)
+              if (back !== content) verifyErrors.push(rel + ' (内容不一致)')
+            } catch (e) { verifyErrors.push(rel + ' (回读失败)') }
+          }
         }
         restored.push(safe)
       }
@@ -409,12 +507,12 @@ return {
           const target = joinBase(home, 'external-plugins/' + shortName)
           if (dryRun) { predictedLinks.push(pkgName); continue }
           if (subprocess === undefined) { linkErrors.push(pkgName + ' (subprocess 不可用)'); continue }
-          const r = await linkExternalPlugin(home, linkPath, target)
+          const r = await linkExternalPlugin(linkPath, target)
           if (r.ok) links.push(pkgName + ' → ' + linkPath)
-          else linkErrors.push(pkgName + ' (' + (r.error || r.exitCode) + ')')
+          else linkErrors.push(pkgName + ' (' + r.error + ')')
         }
       }
-      return { home, dryRun, restored, backups, skipped, binaries, links, predictedLinks, linkErrors, verifyErrors }
+      return { home, dryRun, restored, backups, skipped, binaries, links, predictedLinks, linkErrors, verifyErrors, pluginDeps: Array.isArray(bundle.pluginDeps) ? bundle.pluginDeps : [], decryptedCred }
     }
 
     async function importLast(args) {
@@ -436,7 +534,7 @@ return {
 
     const tool = harness.defineTool({
       name: 'dsh_config_migrate',
-      description: '导出/导入 DeepSeek Harness 配置（${DSH_HOME} 下的 settings.yaml、.credentials.yaml、profiles、external-plugins 与 .agent-presets），跨平台支持 Windows / macOS / Linux。导出以 base64 打包二进制资源，把 profiles/*/package.json 里指向 external-plugins 的绝对 link: 改写为相对路径，并支持 dryRun 预览清单；导入时内容相同的文件自动跳过、覆盖前备份为 *.bak-<时间戳>、写回后校验文本一致性/二进制大小、按平台重建外部插件链接（Windows 用 junction，macOS/Linux 用符号链接），重启后即可用。action=status 列出配置清单；action=export 打包为 JSON（path 指定输出文件，缺省写入工作区 dsh-config-export.json；dryRun=true 只返回清单不写盘；skipCredentials 排除 .credentials.yaml）；action=import 从 path 指向的备份包恢复（dryRun=true 只预览；onlyMissing=true 仅恢复缺失文件；skipCredentials 排除凭据）；action=importLast 一键导入本会话/工作区发现的最新备份。home 可选，缺省自动探测 DSH_HOME。',
+      description: '导出/导入 DeepSeek Harness 配置（${DSH_HOME} 下的 settings.yaml、.credentials.yaml、profiles、external-plugins 与 .agent-presets），跨平台支持 Windows / macOS / Linux。导出以 base64 打包二进制资源，把 profiles/*/package.json 里指向 external-plugins 的绝对 link: 改写为相对路径，可用 password 对 .credentials.yaml 做 AES-256-GCM 加密，并检测外部插件缺失的 npm 依赖；导入时内容相同的文件自动跳过、覆盖前备份为 *.bak-<时间戳>、写回后校验、按平台重建外部插件链接（Windows junction / Unix 符号链接）、检测到加密凭据时用 password 解密、兼容 v1/v2 旧包（自动相对化 link）。action=status 列出配置清单；action=export 打包为 JSON（path 指定输出文件，缺省写入工作区 dsh-config-export.json；dryRun=true 只返回清单不写盘；skipCredentials 排除 .credentials.yaml；password 加密凭据）；action=import 从 path 指向的备份包恢复（dryRun=true 只预览；onlyMissing=true 仅恢复缺失文件；skipCredentials 排除凭据；password 解密）；action=importLast 一键导入本会话/工作区发现的最新备份。home 可选，缺省自动探测 DSH_HOME。',
       parameters: {
         action: { type: 'string', enum: ['status', 'export', 'import', 'importLast'], required: true, description: '要执行的操作' },
         path: { type: 'string', description: 'export 的输出文件路径，或 import 的备份包路径' },
@@ -444,6 +542,7 @@ return {
         dryRun: { type: 'boolean', description: 'export/import 只预览，不写盘' },
         onlyMissing: { type: 'boolean', description: 'import 时仅恢复目标不存在的文件' },
         skipCredentials: { type: 'boolean', description: '排除 .credentials.yaml 凭据文件' },
+        password: { type: 'string', description: 'export 时加密凭据 / import 时解密凭据的口令' },
       },
       output: {
         schema: { type: 'json' },

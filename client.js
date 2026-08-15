@@ -1,13 +1,14 @@
-// dsh-config-migrate — Client half
+// dsh-config-migrate — Client half (v3)
 // Cordis 动态插件函数体：直接作为动态 Package 的 code.client 使用（return { apply(ctx) {...} }）
 // 功能：设置面板「配置迁移」页面（settings.section 槽位）
+// v3 变更：导出/导入增加口令输入框（凭据加密）；导入结果展示外部插件依赖缺失警告
 return {
   apply(ctx) {
     const slots = ctx.get('slots')
     if (slots === undefined) return
 
     styles.insert(`
-.dshmig-page { display: flex; flex-direction: column; gap: 14px; padding: 18px; max-width: 780px; }
+.dshmig-page { display: flex; flex-direction: column; gap: 14px; padding: 18px; max-width: 800px; }
 .dshmig-page h2 { margin: 0 0 4px; font-size: 16px; }
 .dshmig-card { border: 1px solid var(--color-border, rgba(127,127,127,.35)); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .dshmig-card h3 { margin: 0; font-size: 13px; }
@@ -21,6 +22,7 @@ return {
 .dshmig-list { font-size: 12px; max-height: 200px; overflow: auto; border: 1px solid var(--color-border, rgba(127,127,127,.25)); border-radius: 8px; padding: 8px 10px; }
 .dshmig-err { color: var(--color-danger, #e5484d); font-size: 12px; white-space: pre-wrap; }
 .dshmig-ok { color: var(--color-success, #30a46c); font-size: 12px; white-space: pre-wrap; }
+.dshmig-warn { color: var(--color-warning, #f5a524); font-size: 12px; white-space: pre-wrap; }
 .dshmig-hint { font-size: 12px; opacity: .7; }
 .dshmig-check { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .85; }
 `)
@@ -36,6 +38,8 @@ return {
       const [result, setResult] = React.useState(null)
       const [exportPath, setExportPath] = React.useState('')
       const [importPath, setImportPath] = React.useState('')
+      const [exportPassword, setExportPassword] = React.useState('')
+      const [importPassword, setImportPassword] = React.useState('')
       const [skipCredExport, setSkipCredExport] = React.useState(false)
       const [skipCredImport, setSkipCredImport] = React.useState(false)
       const [onlyMissing, setOnlyMissing] = React.useState(false)
@@ -74,15 +78,17 @@ return {
         setBusy(true); setError(''); setResult(null)
         const args = baseArgs({ skipCredentials: skipCredExport })
         if (exportPath.trim()) args.path = exportPath.trim()
+        if (exportPassword.trim()) args.password = exportPassword.trim()
         host.call('config/export', args).then((v) => {
           if (v && v.bundlePath) setLastExport({ path: v.bundlePath, name: String(v.bundlePath).split(/[\\/]/).pop(), size: 0 })
-          setResult({ kind: 'export', text: '导出完成 → ' + v.bundlePath + '\n打包 ' + v.fileCount + ' / ' + v.count + ' 个文件' + (v.binaryCount ? '（含二进制 ' + v.binaryCount + ' 个）' : '') + (v.skipped && v.skipped.length ? '，跳过 ' + v.skipped.length + ' 个' : ''), list: v.skipped })
+          setResult({ kind: 'export', text: '导出完成 → ' + v.bundlePath + '\n打包 ' + v.fileCount + ' / ' + v.count + ' 个文件' + (v.binaryCount ? '（含二进制 ' + v.binaryCount + ' 个）' : '') + (v.credentialEncrypted ? '（凭据已加密）' : '') + (v.skipped && v.skipped.length ? '，跳过 ' + v.skipped.length + ' 个' : ''), list: v.skipped })
         }).catch((e) => setError(String(e && e.message ? e.message : e))).finally(() => setBusy(false))
       }
 
       const doPreviewExport = () => {
         setBusy(true); setError(''); setResult(null)
         const args = baseArgs({ skipCredentials: skipCredExport, dryRun: true })
+        if (exportPassword.trim()) args.password = exportPassword.trim()
         host.call('config/export', args).then((v) => {
           const rows = (v.bundledFiles || []).map((f) => f.rel + (f.size ? ' (' + f.size + ' B)' : ''))
           setResult({ kind: 'preview', text: '将打包 ' + (v.bundledFiles || []).length + ' 个文件' + (v.binaryCount ? '（含二进制 ' + v.binaryCount + ' 个）' : '') + (v.skipped && v.skipped.length ? '，跳过 ' + v.skipped.length + ' 个' : ''), list: rows.concat((v.skipped || []).map((s) => s + ' [跳过]')) })
@@ -92,7 +98,9 @@ return {
       const doPreview = (path) => {
         if (!path || !path.trim()) return
         setBusy(true); setError(''); setResult(null)
-        host.call('config/import', baseArgs({ path: path.trim(), dryRun: true, onlyMissing: onlyMissing, skipCredentials: skipCredImport })).then((v) => {
+        const args = baseArgs({ path: path.trim(), dryRun: true, onlyMissing: onlyMissing, skipCredentials: skipCredImport })
+        if (importPassword.trim()) args.password = importPassword.trim()
+        host.call('config/import', args).then((v) => {
           setResult({ kind: 'preview', text: '预览（不会写盘）→ ' + fmt(v) + '\n来源：' + path, list: (v.restored || []).concat((v.skipped || []).map((s) => s + ' [跳过]')) })
         }).catch((e) => setError(String(e && e.message ? e.message : e))).finally(() => setBusy(false))
       }
@@ -100,8 +108,13 @@ return {
       const doImport = (path) => {
         if (!path || !path.trim()) return
         setBusy(true); setError(''); setResult(null)
-        host.call('config/import', baseArgs({ path: path.trim(), onlyMissing: onlyMissing, skipCredentials: skipCredImport })).then((v) => {
-          const warn = (v.linkErrors && v.linkErrors.length) ? '\n[警告] ' + v.linkErrors.length + ' 个插件链接重建失败，可能需要在新设备手动执行 pnpm install' : ''
+        const args = baseArgs({ path: path.trim(), onlyMissing: onlyMissing, skipCredentials: skipCredImport })
+        if (importPassword.trim()) args.password = importPassword.trim()
+        host.call('config/import', args).then((v) => {
+          const warns = []
+          if (v.linkErrors && v.linkErrors.length) warns.push(v.linkErrors.length + ' 个插件链接重建失败，可能需要手动 pnpm install')
+          if (v.pluginDeps && v.pluginDeps.length) warns.push('外部插件依赖缺失: ' + v.pluginDeps.join(', ') + '（目标设备可能需要 pnpm install）')
+          const warn = warns.length ? '\n[警告] ' + warns.join('；') : ''
           setResult({ kind: 'import', text: fmt(v) + warn + '\n来源：' + path + '\n提示：重启 DeepSeek Harness 后配置生效', list: (v.restored || []).concat((v.skipped || []).map((s) => s + ' [跳过]')) })
         }).catch((e) => setError(String(e && e.message ? e.message : e))).finally(() => setBusy(false))
       }
@@ -109,8 +122,13 @@ return {
       const doImportLast = () => {
         if (!lastExport) return
         setBusy(true); setError(''); setResult(null)
-        host.call('config/importLast', baseArgs({ onlyMissing: onlyMissing, skipCredentials: skipCredImport })).then((v) => {
-          const warn = (v.linkErrors && v.linkErrors.length) ? '\n[警告] ' + v.linkErrors.length + ' 个插件链接重建失败，可能需要在新设备手动执行 pnpm install' : ''
+        const args = baseArgs({ onlyMissing: onlyMissing, skipCredentials: skipCredImport })
+        if (importPassword.trim()) args.password = importPassword.trim()
+        host.call('config/importLast', args).then((v) => {
+          const warns = []
+          if (v.linkErrors && v.linkErrors.length) warns.push(v.linkErrors.length + ' 个插件链接重建失败，可能需要手动 pnpm install')
+          if (v.pluginDeps && v.pluginDeps.length) warns.push('外部插件依赖缺失: ' + v.pluginDeps.join(', ') + '（目标设备可能需要 pnpm install）')
+          const warn = warns.length ? '\n[警告] ' + warns.join('；') : ''
           setResult({ kind: 'import', text: '已一键导入：' + lastExport.path + '\n' + fmt(v) + warn + '\n提示：重启 DeepSeek Harness 后配置生效', list: (v.restored || []).concat((v.skipped || []).map((s) => s + ' [跳过]')) })
         }).catch((e) => setError(String(e && e.message ? e.message : e))).finally(() => setBusy(false))
       }
@@ -126,13 +144,16 @@ return {
           React.createElement('div', { className: 'dshmig-list' }, files.map((f) => React.createElement('div', { key: f.rel }, f.rel + (f.size ? ' (' + f.size + ' B)' : '')))),
         ),
         React.createElement('div', { className: 'dshmig-card' },
-          React.createElement('h3', null, '① 导出配置（打包为 JSON，含二进制资源与插件链接；默认含凭据，注意保管）'),
+          React.createElement('h3', null, '① 导出配置（打包为 JSON；可选口令加密凭据）'),
           React.createElement('div', { className: 'dshmig-row' },
             React.createElement('input', { className: 'dshmig-input', placeholder: '输出文件路径（留空使用工作区 dsh-config-export.json）', value: exportPath, onChange: (e) => setExportPath(e.target.value) }),
             React.createElement('label', { className: 'dshmig-check' },
               React.createElement('input', { type: 'checkbox', checked: skipCredExport, onChange: (e) => setSkipCredExport(e.target.checked) }),
               '排除凭据',
             ),
+          ),
+          React.createElement('div', { className: 'dshmig-row' },
+            React.createElement('input', { className: 'dshmig-input', type: 'password', placeholder: '口令（可选）：加密 .credentials.yaml', value: exportPassword, onChange: (e) => setExportPassword(e.target.value) }),
             React.createElement('button', { className: 'dshmig-btn secondary', disabled: busy, onClick: doPreviewExport }, '预览'),
             React.createElement('button', { className: 'dshmig-btn', disabled: busy, onClick: doExport }, '导出'),
           ),
@@ -152,11 +173,12 @@ return {
             ),
           ),
           React.createElement('div', { className: 'dshmig-row' },
-            React.createElement('input', { className: 'dshmig-input', placeholder: '或手动指定备份包 JSON 路径', value: importPath, onChange: (e) => setImportPath(e.target.value) }),
+            React.createElement('input', { className: 'dshmig-input', placeholder: '备份包 JSON 路径', value: importPath, onChange: (e) => setImportPath(e.target.value) }),
+            React.createElement('input', { className: 'dshmig-input', type: 'password', placeholder: '口令（若导出时加密过）', value: importPassword, onChange: (e) => setImportPassword(e.target.value) }),
             React.createElement('button', { className: 'dshmig-btn secondary', disabled: busy || !importPath.trim(), onClick: () => doPreview(importPath) }, '预览'),
             React.createElement('button', { className: 'dshmig-btn secondary', disabled: busy || !importPath.trim(), onClick: () => doImport(importPath) }, '导入'),
           ),
-          React.createElement('div', { className: 'dshmig-hint' }, '导入覆盖前自动备份为 *.bak-<时间戳>；内容相同的文件自动跳过；二进制资源按平台解码还原；外部插件在 Windows 重建 junction、在 macOS/Linux 重建符号链接，重启后即可用。'),
+          React.createElement('div', { className: 'dshmig-hint' }, '导入覆盖前自动备份为 *.bak-<时间戳>；内容相同的文件自动跳过；二进制资源按平台解码还原；外部插件在 Windows 重建 junction、在 macOS/Linux 重建符号链接；导入时检测外部插件缺失的 npm 依赖。重启后即可用。'),
         ),
         error ? React.createElement('div', { className: 'dshmig-err' }, error) : null,
         result ? React.createElement('div', { className: 'dshmig-card' },
