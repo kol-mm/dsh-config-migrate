@@ -71,9 +71,13 @@ return {
       return i >= 0 ? p.slice(i + 1) : p
     }
     function safeRel(rel) {
-      const parts = String(rel).split('/')
+      const s = String(rel)
+      if (!s) return null
+      if (/^[A-Za-z]:/.test(s)) return null // windows drive prefix
+      if (s.startsWith('/') || s.startsWith('\\')) return null // absolute
+      const parts = s.split('/')
       for (const p of parts) {
-        if (!p || p === '.' || p === '..') return null
+        if (!p || p === '.' || p === '..' || p.indexOf('\\') !== -1) return null
       }
       return parts.join('/')
     }
