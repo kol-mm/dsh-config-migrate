@@ -1,42 +1,42 @@
-{
-  "name": "dsh-config-migrate",
-  "version": "1.0.0",
-  "description": "DeepSeek Harness config migration plugin: one-click export/import of DSH_HOME settings, credentials, profiles and external plugins. Cross-platform (Windows/macOS/Linux), credential encryption, external plugin migration.",
-  "keywords": [
-    "deepseek-harness",
-    "dsh",
-    "migration",
-    "config",
-    "cordis",
-    "plugin"
-  ],
-  "license": "MIT",
-  "type": "module",
-  "files": [
-    "host.js",
-    "client.js",
-    "README.md",
-    "README.en.md"
-  ],
-  "main": "host.js",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/kol-mm/dsh-config-migrate.git"
-  },
-  "homepage": "https://github.com/kol-mm/dsh-config-migrate#readme",
-  "bugs": {
-    "url": "https://github.com/kol-mm/dsh-config-migrate/issues"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "scripts": {
-    "test": "node test/core.test.mjs"
-  },
-  "dsh": {
-    "plugin": {
-      "host": "./host.js",
-      "client": "./client.js"
-    }
-  }
+﻿{
+    "name":  "dsh-config-migrate",
+    "version":  "1.0.1",
+    "description":  "DeepSeek Harness config migration plugin: one-click export/import of DSH_HOME settings, credentials, profiles and external plugins. Cross-platform (Windows/macOS/Linux), credential encryption, external plugin migration.",
+    "keywords":  [
+                     "deepseek-harness",
+                     "dsh",
+                     "migration",
+                     "config",
+                     "cordis",
+                     "plugin"
+                 ],
+    "license":  "MIT",
+    "type":  "module",
+    "files":  [
+                  "host.js",
+                  "client.js",
+                  "README.md",
+                  "README.en.md"
+              ],
+    "main":  "host.js",
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/kol-mm/dsh-config-migrate.git"
+                   },
+    "homepage":  "https://github.com/kol-mm/dsh-config-migrate#readme",
+    "bugs":  {
+                 "url":  "https://github.com/kol-mm/dsh-config-migrate/issues"
+             },
+    "engines":  {
+                    "node":  "\u003e=18"
+                },
+    "scripts":  {
+                    "test":  "node test/core.test.mjs"
+                },
+    "dsh":  {
+                "plugin":  {
+                               "host":  "./host.js",
+                               "client":  "./client.js"
+                           }
+            }
 }

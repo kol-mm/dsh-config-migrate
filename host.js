@@ -163,6 +163,7 @@ return {
       'const target=process.argv[2];',
       'const win=/^[A-Za-z]:|\\\\/.test(target);',
       'fs.mkdirSync(path.dirname(link),{recursive:true});',
+      'fs.mkdirSync(target,{recursive:true});',
       'try{fs.rmSync(link,{recursive:true,force:true});}catch(e){}',
       'fs.symlinkSync(target,link,win?"junction":"dir");',
     ].join('\n')

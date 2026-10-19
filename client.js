@@ -20,6 +20,8 @@ return {
 .dshmig-btn.ghost { background: transparent; border-color: var(--color-accent, #4a7dff); color: var(--color-accent, #4a7dff); }
 .dshmig-meta { font-size: 12px; opacity: .8; white-space: pre-wrap; word-break: break-all; }
 .dshmig-list { font-size: 12px; max-height: 200px; overflow: auto; border: 1px solid var(--color-border, rgba(127,127,127,.25)); border-radius: 8px; padding: 8px 10px; }
+.dshmig-listrow { display: flex; align-items: center; gap: 8px; padding: 2px 0; cursor: pointer; }
+.dshmig-listrow:hover { opacity: .75; }
 .dshmig-err { color: var(--color-danger, #e5484d); font-size: 12px; white-space: pre-wrap; }
 .dshmig-ok { color: var(--color-success, #30a46c); font-size: 12px; white-space: pre-wrap; }
 .dshmig-warn { color: var(--color-warning, #f5a524); font-size: 12px; white-space: pre-wrap; }
@@ -32,6 +34,7 @@ return {
       const [platform, setPlatform] = React.useState('')
       const [homeOverride, setHomeOverride] = React.useState('')
       const [files, setFiles] = React.useState([])
+      const [discovered, setDiscovered] = React.useState([])
       const [lastExport, setLastExport] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
       const [error, setError] = React.useState('')
@@ -55,6 +58,7 @@ return {
           if (v && typeof v === 'object' && v.home) setHome(String(v.home))
           if (v && typeof v.platform === 'string' && v.platform) setPlatform(v.platform)
           if (v && Array.isArray(v.files)) setFiles(v.files)
+          if (v && Array.isArray(v.discovered)) setDiscovered(v.discovered)
           if (v && v.lastExport) setLastExport(v.lastExport)
         }).catch((e) => setError(String(e && e.message ? e.message : e)))
       }
@@ -172,6 +176,9 @@ return {
               '排除凭据',
             ),
           ),
+          discovered && discovered.length ? React.createElement('div', { className: 'dshmig-list' },
+            discovered.map((b) => React.createElement('div', { key: b.path, className: 'dshmig-listrow', onClick: () => setImportPath(b.path) }, React.createElement('span', null, '📦 ' + b.name + (b.size ? ' (' + b.size + ' B)' : '')), React.createElement('span', { className: 'dshmig-hint' }, '点击选用'))),
+          ) : null,
           React.createElement('div', { className: 'dshmig-row' },
             React.createElement('input', { className: 'dshmig-input', placeholder: '备份包 JSON 路径', value: importPath, onChange: (e) => setImportPath(e.target.value) }),
             React.createElement('input', { className: 'dshmig-input', type: 'password', placeholder: '口令（若导出时加密过）', value: importPassword, onChange: (e) => setImportPassword(e.target.value) }),
