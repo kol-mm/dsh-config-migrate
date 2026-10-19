@@ -1,4 +1,4 @@
-﻿{
+{
     "name":  "dsh-config-migrate",
     "version":  "1.0.1",
     "description":  "DeepSeek Harness config migration plugin: one-click export/import of DSH_HOME settings, credentials, profiles and external plugins. Cross-platform (Windows/macOS/Linux), credential encryption, external plugin migration.",
